@@ -1,0 +1,10 @@
+name = "SVGPlot"
+uuid = "52c1ab14-7500-446b-a982-3aae5a675c5c"
+authors = ["Nils Luettschwager <nluetts@gwdg.de>"]
+version = "0.1.0"
+
+[deps]
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+
+[compat]
+Revise = "3.6.4"
