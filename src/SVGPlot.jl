@@ -32,12 +32,24 @@ struct Axis <: AbstractAxis
     position::UVCoords
     width::Float64
     height::Float64
+    limits::Tuple{Float64,Float64,Float64,Float64}
     elements::Vector{Element}
 end
 
 struct Text <: Element
     text::String
     position::UVCoords
+    axis::Axis
+    angle::Float64
+    function Text(text, u, v, ax; angle=0.0)
+        new(text, UVCoords(u, v), ax, angle)
+    end
+end
+
+struct Tick{T<:Val} <: Element
+    positions::Vector{Float64}
+    color::String
+    linewidth::Float64
     axis::Axis
 end
 
@@ -60,24 +72,19 @@ struct ScatterPlot <: Plot
     axis::Axis
 end
 
-parent_figure(ax::Axis)::Figure = ax.fig
-parent_axis(plot::LinePlot)::Axis = plot.axis
-parent_axis(plot::ScatterPlot)::Axis = plot.axis
-parent_axis(plot::BarPlot)::Axis = plot.axis
-
 function axis!(fig::Figure{Axis}, u::Float64, v::Float64, w::Float64, h::Float64)::Axis
-    ax = Axis(fig, UVCoords(u, v), w, h, [])
+    ax = Axis(fig, UVCoords(u, v), w, h, (0, 100, 0, 200), [])
     push!(fig.axes, ax)
     ax
 end
 
 mutable struct Tag{T<:Val}
     parameters::Dict{String,String}
-    children::Vector{Union{Tag, String}}
+    children::Vector{Union{Tag,String}}
     closing::Bool
 end
 
-const TagChild = Union{Tag, String}
+const TagChild = Union{Tag,String}
 
 function add_child!(root::Tag{T}, child::Tag{S}) where {S<:Val,T<:Val}
     push!(root.children, child)
@@ -118,14 +125,47 @@ function rect(x, y, width, height)::Tag{Val{:rect}}
 end
 
 """Create an text tag."""
-function text(x, y, text::String)::Tag{Val{:text}}
+function text_tag(x, y, text_tag::String; kw...)::Tag{Val{:text}}
     pars = Dict(
         "x" => "$x",
         "y" => "$y",
         "text-anchor" => "middle",
+        Dict(String(k) => String(v) for (k, v) in kw)...
     )
-    children = TagChild[text]
+    children = TagChild[text_tag]
     Tag{Val{:text}}(pars, children, true)
+end
+
+function line_tag(x1, x2, y1, y2, color::String, linewidth::Float64)::Tag{Val{:line}}
+    pars = Dict(
+        "x1" => "$x1",
+        "x2" => "$x2",
+        "y1" => "$y1",
+        "y2" => "$y2",
+        "stroke" => color,
+        "width" => "$(linewidth)",
+
+    )
+    children = TagChild[]
+    Tag{Val{:line}}(pars, children, false)
+end
+
+function polyline(xs, ys, color::String, linewidth::Float64)::Tag{Val{:polyline}}
+    points = let
+        buf = IOBuffer()
+        for (x, y) in zip(xs, ys)
+            write(buf, "$x,$y ")
+        end
+        String(take!(buf))
+    end
+    pars = Dict(
+        "points" => "$(points)",
+        "stroke" => color,
+        "width" => "$(linewidth)",
+        "fill" => "none",
+    )
+    children = TagChild[]
+    Tag{Val{:polyline}}(pars, children, false)
 end
 
 function with_background!(tag::Tag{Val{:svg}}, color::String)
@@ -162,12 +202,9 @@ end
 
 render!(buf, String) = write(buf, String)
 
-function scatter!(s::Tag{Val{:svg}}, xs, ys)
-    for (x, y) in zip(xs, ys)
-        c = circle(x, y, 100)
-        with_background!(c, "blue")
-        add_child!(s, c)
-    end
+function ticks!(ax::Axis, xticks::Vector{Float64}, yticks::Vector{Float64})
+    push!(ax.elements, Tick{Val{:x}}(xticks, "black", 1.0, ax))
+    push!(ax.elements, Tick{Val{:y}}(yticks, "black", 1.0, ax))
 end
 
 function render(fig::Figure)::String
@@ -182,10 +219,17 @@ end
 function to_tags(ax::Axis)
     w, h = ax.fig.width, ax.fig.height
     ax_rect = rect(w * ax.position.u, h * ax.position.v, ax.width * w, ax.height * h)
-    with_background!(ax_rect, "green")
+    with_background!(ax_rect, "yellow")
     local tags = []
     push!(tags, ax_rect)
-    push!(tags, [to_tags(e) for e in ax.elements]...)
+    for el in ax.elements
+        ts = to_tags(el) 
+        if typeof(ts) <: Vector
+            push!(tags, ts...)
+        else
+            push!(tags, ts)
+        end
+    end
     tags
 end
 
@@ -193,21 +237,76 @@ function to_tags(txt::Text)::Tag{Val{:text}}
     fw, fh = txt.axis.fig.width, txt.axis.fig.height
     au, av, aw, ah = txt.axis.position.u, txt.axis.position.v, txt.axis.width, txt.axis.height
     x = fw * (au + txt.position.u * aw)
-    y = fh * (av + txt.position.v * ah)
-    text(x, y, txt.text)
+    y = fh * (av + (1 - txt.position.v) * ah)
+    if txt.angle != 0
+        θ = txt.angle
+        x, y = [x  y]*[cosd(θ) -sind(θ); sind(θ) cosd(θ)]
+        text_tag(x, y, txt.text; transform="rotate($(txt.angle),0,0)")
+    else
+        text_tag(x, y, txt.text)
+    end
 end
 
+function to_tags(line::LinePlot)
+    fw, fh = line.axis.fig.width, line.axis.fig.height
+    au, av, aw, ah = line.axis.position.u, line.axis.position.v, line.axis.width, line.axis.height
+    xmin, xmax, ymin, ymax = line.axis.limits
+
+    x(u) = fw * (au + u * aw)
+    y(v) = fh * (av + v * ah)
+    u(x) = (x - xmin) / (xmax - xmin)
+    v(y) = (y - ymin) / (ymax - ymin)
+
+    xs = [x(u(xi)) for xi in line.xs]
+    ys = [y(1 - v(yi)) for yi in line.ys]
+
+    polyline(xs, ys, "red", 1.0)
+end
+
+function to_tags(tk::Tick{Val{:x}})
+    fw, fh = tk.axis.fig.width, tk.axis.fig.height
+    au, av, aw, ah = tk.axis.position.u, tk.axis.position.v, tk.axis.width, tk.axis.height
+    xmin, xmax, ymin, ymax = tk.axis.limits
+
+    x(u) = fw * (au + u * aw)
+    y(v) = fh * (av + v * ah)
+    u(x) = (x - xmin) / (xmax - xmin)
+    v(y) = (y - ymin) / (ymax - ymin)
+
+    [line_tag(x(u(xi)), x(u(xi)), y(1-0.01), y(1+0.01), "black", 1.0) for xi in tk.positions]
+end
+
+function to_tags(tk::Tick{Val{:y}})
+    fw, fh = tk.axis.fig.width, tk.axis.fig.height
+    au, av, aw, ah = tk.axis.position.u, tk.axis.position.v, tk.axis.width, tk.axis.height
+    xmin, xmax, ymin, ymax = tk.axis.limits
+
+    x(u) = fw * (au + u * aw)
+    y(v) = fh * (av + v * ah)
+    u(x) = (x - xmin) / (xmax - xmin)
+    v(y) = (y - ymin) / (ymax - ymin)
+
+    [line_tag(x(-0.005), x(0.005), y(u(yi)), y(u(yi)), "black", 1.0) for yi in tk.positions]
+end
 
 function test()
-    fig = Figure(800, 600, Axis[])
-    ax = axis!(fig, 0.1, 0.1, 0.25, 0.25)
-    push!(ax.elements, Text("Hello", UVCoords(0.5, 0.5), ax))
-    ax = axis!(fig, 0.4, 0.1, 0.25, 0.25)
-    push!(ax.elements, Text(",", UVCoords(0.5, 0.5), ax))
-    ax = axis!(fig, 0.1, 0.4, 0.25, 0.25)
-    push!(ax.elements, Text("World", UVCoords(0.5, 0.5), ax))
-    ax = axis!(fig, 0.4, 0.4, 0.25, 0.25)
-    push!(ax.elements, Text("!", UVCoords(0.5, 0.5), ax))
+    fig = Figure(1280, 960, Axis[])
+    # ax = axis!(fig, 0.1, 0.1, 0.25, 0.25)
+    # push!(ax.elements, Text("Hello", UVCoords(0.5, 0.5), ax))
+    # ax = axis!(fig, 0.4, 0.1, 0.25, 0.25)
+    # push!(ax.elements, Text(",", UVCoords(0.5, 0.5), ax))
+    # ax = axis!(fig, 0.1, 0.4, 0.25, 0.25)
+    # push!(ax.elements, Text("World", UVCoords(0.5, 0.5), ax))
+    ax = axis!(fig, 0.1, 0.1, 0.4, 0.4)
+    ticks!(ax, [0, 25, 50, 75, 100.], [0, 50, 100.])
+    push!(ax.elements, Text("x-label / unit", 0.5, -0.05, ax))
+    push!(ax.elements, Text("y-label / unit", -0.05, 0.5, ax; angle=270.0))
+    push!(ax.elements, LinePlot(collect(0:100), rand(101)*200, ax))
+    ax = axis!(fig, 0.4, 0.4, 0.4, 0.4)
+    ticks!(ax, [0, 25, 50, 75, 100.], [0, 50, 100.])
+    push!(ax.elements, Text("x-label / unit", 0.5, -0.05, ax))
+    push!(ax.elements, Text("y-label / unit", -0.05, 0.5, ax; angle=270.0))
+    push!(ax.elements, LinePlot(collect(0:100), rand(101)*200, ax))
 
     render(fig)
 
