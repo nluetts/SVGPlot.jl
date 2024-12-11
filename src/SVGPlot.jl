@@ -68,12 +68,20 @@ struct BarPlot <: Plot
     ys::Vector{Float64}
     axis::Axis
     width::Float64
+    properties::Dict{Symbol, Any}
+    function BarPlot(xs, ys, ax, w=1.0; kw...)
+        new(xs, ys, ax, w, kw)
+    end
 end
 
 struct ScatterPlot <: Plot
     xs::Vector{Float64}
     ys::Vector{Float64}
     axis::Axis
+    properties::Dict{Symbol, Any}
+    function ScatterPlot(xs, ys, ax; kw...)
+        new(xs, ys, ax, kw)
+    end
 end
 
 function axis!(fig::Figure{Axis}, uvwh::Tuple{Number, Number, Number, Number}, lims::Tuple{Number, Number, Number, Number}; kw...)::Axis
@@ -107,11 +115,12 @@ function svg_tag(width, height)::Tag{Val{:svg}}
 end
 
 """Create an circle tag."""
-function circle(cx, cy, r)::Tag{Val{:circle}}
+function circle_tag(cx, cy, r; kw...)::Tag{Val{:circle}}
     pars = Dict(
         "cx" => "$cx",
         "cy" => "$cy",
         "r" => "$(r)mm",
+        Dict(replace(String(k), "_" => "-") => "$v" for (k, v) in kw)...
     )
     children = TagChild[]
     Tag{Val{:circle}}(pars, children, false)
@@ -272,6 +281,38 @@ function to_tags(line::LinePlot)
     polyline(xs, ys, "red", 1.0)
 end
 
+function to_tags(sctr::ScatterPlot)
+    fw, fh = sctr.axis.fig.width, sctr.axis.fig.height
+    au, av, aw, ah = sctr.axis.position.u, sctr.axis.position.v, sctr.axis.width, sctr.axis.height
+    xmin, xmax, ymin, ymax = sctr.axis.limits
+
+    x(u) = fw * (au + u * aw)
+    y(v) = fh * (av + v * ah)
+    u(x) = (x - xmin) / (xmax - xmin)
+    v(y) = (y - ymin) / (ymax - ymin)
+
+    xs = [x(u(xi)) for xi in sctr.xs]
+    ys = [y(1 - v(yi)) for yi in sctr.ys]
+
+    [circle_tag(xi, yi, 1; sctr.properties...) for (xi, yi) in zip(xs, ys)]
+end
+
+function to_tags(bplt::BarPlot)
+    fw, fh = bplt.axis.fig.width, bplt.axis.fig.height
+    au, av, aw, ah = bplt.axis.position.u, bplt.axis.position.v, bplt.axis.width, bplt.axis.height
+    xmin, xmax, ymin, ymax = bplt.axis.limits
+
+    x(u) = fw * (au + u * aw)
+    y(v) = fh * (av + v * ah)
+    u(x) = (x - xmin) / (xmax - xmin)
+    v(y) = 1 - (y - ymin) / (ymax - ymin)
+
+    xs = [x(u(xi)) for xi in bplt.xs]
+    ys = [y(v(yi)) for yi in bplt.ys]
+
+    [rect_tag(xi - bplt.width/2, yi, bplt.width, abs(yi - y(v(0))); bplt.properties...) for (xi, yi) in zip(xs, ys)]
+end
+
 function to_tags(tk::Tick{Val{:x}})
     fw, fh = tk.axis.fig.width, tk.axis.fig.height
     au, av, aw, ah = tk.axis.position.u, tk.axis.position.v, tk.axis.width, tk.axis.height
@@ -303,31 +344,34 @@ function to_tags(tk::Tick{Val{:y}})
 end
 
 function test()
-    fig = Figure(1280, 960, Axis[])
+    fig = Figure(640, 480, Axis[])
 
     # first axis
-    ax = axis!(fig, (0.1, 0.1, 0.85, 0.35),(-10, 110, -10, 220); fill="#dedede")
+    ax = axis!(fig, (0.2, 0.1, 0.75, 0.35),(-10, 110, -10, 220); fill="#dedede")
     # title
     push!(ax.elements, Text("A somewhat hacky title", 0.5, 1.1, ax; text_anchor="middle", font_size="20pt"))
 
     ticks!(ax, [0, 25, 50, 75, 100.0], [0, 50, 100, 150, 200.0])
     push!(ax.elements, Text("x-label / unit", 0.5, -0.2, ax; text_anchor="middle"))
-    push!(ax.elements, Text("y-label / unit", -0.2, 0.5, ax; angle=270.0, text_anchor="middle"))
-    push!(ax.elements, LinePlot(collect(0:100), rand(101) * 200, ax))
-
+    push!(ax.elements, Text("y-label / unit", -0.15, 0.5, ax; angle=270.0, text_anchor="middle"))
+    xs = collect(0:100)
+    ys = rand(101) * 200
+    push!(ax.elements, LinePlot(xs, ys, ax))
+    push!(ax.elements, ScatterPlot(xs, ys, ax; r="4px", fill="blue"))
+    
     # second axis
-    ax = axis!(fig, (0.1, 0.55, 0.85, 0.35),(-10, 110, -10, 220); fill="#decebe")
+    ax = axis!(fig, (0.2, 0.55, 0.75, 0.35),(-10, 110, -10, 220); fill="#decebe")
     ticks!(ax, [25, 50, 75, 100.0], [0, 50, 100, 150, 200.0])
     push!(ax.elements, Text("x-label / unit", 0.5, -0.2, ax; text_anchor="middle"))
-    push!(ax.elements, Text("y-label / unit", -0.2, 0.5, ax; angle=270.0, text_anchor="middle"))
-    push!(ax.elements, LinePlot(collect(0:100), rand(101) * 200, ax))
+    push!(ax.elements, Text("y-label / unit", -0.15, 0.5, ax; angle=270.0, text_anchor="middle"))
+    push!(ax.elements, BarPlot(xs, ys, ax, 5; fill="blue"))
     render(fig)
 end
 
-# open("tmp.html", "w") do f
-#     write(f, "<html>")
-#     write(f, test())
-#     write(f, "</html>")
-# end
+open("tmp.html", "w") do f
+    write(f, "<html>")
+    write(f, test())
+    write(f, "</html>")
+end
 
 end # module SVGPlot
