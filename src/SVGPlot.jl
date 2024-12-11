@@ -34,15 +34,19 @@ struct Axis <: AbstractAxis
     height::Float64
     limits::Tuple{Float64,Float64,Float64,Float64}
     elements::Vector{Element}
+    properties::Dict{Symbol, Any}
+    function Axis(fig, pos, w, h, lims, els; kw...)
+        new(fig, pos, w, h, lims, els, kw)
+    end
 end
 
 struct Text <: Element
     text::String
     position::UVCoords
     axis::Axis
-    angle::Float64
-    function Text(text, u, v, ax; angle=0.0)
-        new(text, UVCoords(u, v), ax, angle)
+    properties::Dict{Symbol, Any}
+    function Text(text, u, v, ax; kw...)
+        new(text, UVCoords(u, v), ax, kw)
     end
 end
 
@@ -72,8 +76,9 @@ struct ScatterPlot <: Plot
     axis::Axis
 end
 
-function axis!(fig::Figure{Axis}, u::Float64, v::Float64, w::Float64, h::Float64)::Axis
-    ax = Axis(fig, UVCoords(u, v), w, h, (0, 100, 0, 200), [])
+function axis!(fig::Figure{Axis}, uvwh::Tuple{Number, Number, Number, Number}, lims::Tuple{Number, Number, Number, Number}; kw...)::Axis
+    u, v, w, h = uvwh
+    ax = Axis(fig, UVCoords(u, v), w, h, lims, []; kw...)
     push!(fig.axes, ax)
     ax
 end
@@ -113,12 +118,14 @@ function circle(cx, cy, r)::Tag{Val{:circle}}
 end
 
 """Create an rect tag."""
-function rect(x, y, width, height)::Tag{Val{:rect}}
+function rect_tag(x, y, width, height; kw...)::Tag{Val{:rect}}
     pars = Dict(
         "x" => "$x",
         "y" => "$y",
         "width" => "$(width)",
         "height" => "$(height)",
+        "fill" => "white",
+        Dict(replace(String(k), "_" => "-") => "$v" for (k, v) in kw)...
     )
     children = TagChild[]
     Tag{Val{:rect}}(pars, children, false)
@@ -129,8 +136,7 @@ function text_tag(x, y, text_tag::String; kw...)::Tag{Val{:text}}
     pars = Dict(
         "x" => "$x",
         "y" => "$y",
-        "text-anchor" => "middle",
-        Dict(String(k) => String(v) for (k, v) in kw)...
+        Dict(replace(String(k), "_" => "-") => "$v" for (k, v) in kw)...
     )
     children = TagChild[text_tag]
     Tag{Val{:text}}(pars, children, true)
@@ -143,9 +149,7 @@ function line_tag(x1, x2, y1, y2, color::String, linewidth::Float64)::Tag{Val{:l
         "y1" => "$y1",
         "y2" => "$y2",
         "stroke" => color,
-        "width" => "$(linewidth)",
-
-    )
+        "width" => "$(linewidth)",)
     children = TagChild[]
     Tag{Val{:line}}(pars, children, false)
 end
@@ -158,6 +162,12 @@ function polyline(xs, ys, color::String, linewidth::Float64)::Tag{Val{:polyline}
         end
         String(take!(buf))
     end
+    pars = Dict(
+        "points" => "$(points)",
+        "stroke" => color,
+        "width" => "$(linewidth)",
+        "fill" => "none",
+    )
     pars = Dict(
         "points" => "$(points)",
         "stroke" => color,
@@ -180,6 +190,7 @@ end
 function render(tag::Tag{Val{:svg}})
     buf = IOBuffer()
     render!(buf, tag)
+    buf
 end
 
 function render!(buf::IOBuffer, tag::Tag{Val{T}}) where {T}
@@ -197,7 +208,6 @@ function render!(buf::IOBuffer, tag::Tag{Val{T}}) where {T}
     if tag.closing
         write(buf, "</$T>")
     end
-    buf
 end
 
 render!(buf, String) = write(buf, String)
@@ -218,12 +228,11 @@ end
 
 function to_tags(ax::Axis)
     w, h = ax.fig.width, ax.fig.height
-    ax_rect = rect(w * ax.position.u, h * ax.position.v, ax.width * w, ax.height * h)
-    with_background!(ax_rect, "yellow")
+    ax_rect = rect_tag(w * ax.position.u, h * ax.position.v, ax.width * w, ax.height * h; ax.properties...)
     local tags = []
     push!(tags, ax_rect)
     for el in ax.elements
-        ts = to_tags(el) 
+        ts = to_tags(el)
         if typeof(ts) <: Vector
             push!(tags, ts...)
         else
@@ -238,12 +247,12 @@ function to_tags(txt::Text)::Tag{Val{:text}}
     au, av, aw, ah = txt.axis.position.u, txt.axis.position.v, txt.axis.width, txt.axis.height
     x = fw * (au + txt.position.u * aw)
     y = fh * (av + (1 - txt.position.v) * ah)
-    if txt.angle != 0
-        θ = txt.angle
-        x, y = [x  y]*[cosd(θ) -sind(θ); sind(θ) cosd(θ)]
-        text_tag(x, y, txt.text; transform="rotate($(txt.angle),0,0)")
+    θ = get(txt.properties, :angle, nothing)
+    if !isnothing(θ)
+        x, y = [x y] * [cosd(θ) -sind(θ); sind(θ) cosd(θ)]
+        text_tag(x, y, txt.text; transform="rotate($(θ),0,0)", txt.properties...)
     else
-        text_tag(x, y, txt.text)
+        text_tag(x, y, txt.text; txt.properties...)
     end
 end
 
@@ -266,67 +275,59 @@ end
 function to_tags(tk::Tick{Val{:x}})
     fw, fh = tk.axis.fig.width, tk.axis.fig.height
     au, av, aw, ah = tk.axis.position.u, tk.axis.position.v, tk.axis.width, tk.axis.height
-    xmin, xmax, ymin, ymax = tk.axis.limits
+    xmin, xmax, _, _ = tk.axis.limits
 
     x(u) = fw * (au + u * aw)
     y(v) = fh * (av + v * ah)
     u(x) = (x - xmin) / (xmax - xmin)
-    v(y) = (y - ymin) / (ymax - ymin)
 
-    [line_tag(x(u(xi)), x(u(xi)), y(1-0.01), y(1+0.01), "black", 1.0) for xi in tk.positions]
+    vcat(
+        [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01), "black", 1.0) for xi in tk.positions],
+        [text_tag(x(u(xi)), y(1.1), "$xi"; text_anchor="middle") for xi in tk.positions]
+    )
 end
 
 function to_tags(tk::Tick{Val{:y}})
     fw, fh = tk.axis.fig.width, tk.axis.fig.height
     au, av, aw, ah = tk.axis.position.u, tk.axis.position.v, tk.axis.width, tk.axis.height
-    xmin, xmax, ymin, ymax = tk.axis.limits
+    _, _, ymin, ymax = tk.axis.limits
 
     x(u) = fw * (au + u * aw)
     y(v) = fh * (av + v * ah)
-    u(x) = (x - xmin) / (xmax - xmin)
     v(y) = (y - ymin) / (ymax - ymin)
 
-    [line_tag(x(-0.005), x(0.005), y(u(yi)), y(u(yi)), "black", 1.0) for yi in tk.positions]
+    vcat(
+        [line_tag(x(-0.005), x(0.005), y(1 - v(yi)), y(1 - v(yi)), "black", 1.0) for yi in tk.positions],
+        [text_tag(x(-0.03), y(1 - v(yi) + 0.02), "$yi"; text_anchor="end") for yi in tk.positions]
+    )
 end
 
 function test()
     fig = Figure(1280, 960, Axis[])
-    # ax = axis!(fig, 0.1, 0.1, 0.25, 0.25)
-    # push!(ax.elements, Text("Hello", UVCoords(0.5, 0.5), ax))
-    # ax = axis!(fig, 0.4, 0.1, 0.25, 0.25)
-    # push!(ax.elements, Text(",", UVCoords(0.5, 0.5), ax))
-    # ax = axis!(fig, 0.1, 0.4, 0.25, 0.25)
-    # push!(ax.elements, Text("World", UVCoords(0.5, 0.5), ax))
-    ax = axis!(fig, 0.1, 0.1, 0.4, 0.4)
-    ticks!(ax, [0, 25, 50, 75, 100.], [0, 50, 100.])
-    push!(ax.elements, Text("x-label / unit", 0.5, -0.05, ax))
-    push!(ax.elements, Text("y-label / unit", -0.05, 0.5, ax; angle=270.0))
-    push!(ax.elements, LinePlot(collect(0:100), rand(101)*200, ax))
-    ax = axis!(fig, 0.4, 0.4, 0.4, 0.4)
-    ticks!(ax, [0, 25, 50, 75, 100.], [0, 50, 100.])
-    push!(ax.elements, Text("x-label / unit", 0.5, -0.05, ax))
-    push!(ax.elements, Text("y-label / unit", -0.05, 0.5, ax; angle=270.0))
-    push!(ax.elements, LinePlot(collect(0:100), rand(101)*200, ax))
 
+    # first axis
+    ax = axis!(fig, (0.1, 0.1, 0.85, 0.35),(-10, 110, -10, 220); fill="#dedede")
+    # title
+    push!(ax.elements, Text("A somewhat hacky title", 0.5, 1.1, ax; text_anchor="middle", font_size="20pt"))
+
+    ticks!(ax, [0, 25, 50, 75, 100.0], [0, 50, 100, 150, 200.0])
+    push!(ax.elements, Text("x-label / unit", 0.5, -0.2, ax; text_anchor="middle"))
+    push!(ax.elements, Text("y-label / unit", -0.2, 0.5, ax; angle=270.0, text_anchor="middle"))
+    push!(ax.elements, LinePlot(collect(0:100), rand(101) * 200, ax))
+
+    # second axis
+    ax = axis!(fig, (0.1, 0.55, 0.85, 0.35),(-10, 110, -10, 220); fill="#decebe")
+    ticks!(ax, [25, 50, 75, 100.0], [0, 50, 100, 150, 200.0])
+    push!(ax.elements, Text("x-label / unit", 0.5, -0.2, ax; text_anchor="middle"))
+    push!(ax.elements, Text("y-label / unit", -0.2, 0.5, ax; angle=270.0, text_anchor="middle"))
+    push!(ax.elements, LinePlot(collect(0:100), rand(101) * 200, ax))
     render(fig)
-
-
-    # s = svg(297, 210)
-    # with_background!(s, "pink")
-    # c = circle(14800, 10500, 300)
-    # with_background!(c, "green")
-    # add_child!(s, c)
-    # scatter!(s, collect(0:1000:10000), rand(0:10000, 10))
-    # raw_svg = render(s) |> take! |> String
-    # open("tmp.svg", "w") do f
-    #     write(f, raw_svg)
-    # end
 end
 
-open("tmp.html", "w") do f
-    write(f, "<html>")
-    write(f, test())
-    write(f, "</html>")
-end
+# open("tmp.html", "w") do f
+#     write(f, "<html>")
+#     write(f, test())
+#     write(f, "</html>")
+# end
 
 end # module SVGPlot
