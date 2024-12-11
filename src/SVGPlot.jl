@@ -1,4 +1,5 @@
 module SVGPlot
+using Random
 
 struct ScreenCoords
     x::Float64
@@ -32,9 +33,9 @@ struct Axis <: AbstractAxis
     position::UVCoords
     width::Float64
     height::Float64
-    limits::Tuple{Float64,Float64,Float64,Float64}
+    limits::Vector{Float64}
     elements::Vector{Element}
-    properties::Dict{Symbol, Any}
+    properties::Dict{Symbol,Any}
     function Axis(fig, pos, w, h, lims, els; kw...)
         new(fig, pos, w, h, lims, els, kw)
     end
@@ -44,7 +45,7 @@ struct Text <: Element
     text::String
     position::UVCoords
     axis::Axis
-    properties::Dict{Symbol, Any}
+    properties::Dict{Symbol,Any}
     function Text(text, u, v, ax; kw...)
         new(text, UVCoords(u, v), ax, kw)
     end
@@ -61,6 +62,10 @@ struct LinePlot <: Plot
     xs::Vector{Float64}
     ys::Vector{Float64}
     axis::Axis
+    properties::Dict{Symbol, Any}
+    function LinePlot(xs, ys, ax; kw...)
+        new(xs, ys, ax, kw)
+    end
 end
 
 struct BarPlot <: Plot
@@ -68,25 +73,60 @@ struct BarPlot <: Plot
     ys::Vector{Float64}
     axis::Axis
     width::Float64
-    properties::Dict{Symbol, Any}
+    properties::Dict{Symbol,Any}
     function BarPlot(xs, ys, ax, w=1.0; kw...)
         new(xs, ys, ax, w, kw)
     end
+end
+
+function histogram(xs, start, stop, step, ax; autoscale = true, w=4, kw...)
+    limits = start:step:stop
+    d = Dict((l, r) => 0 for (l, r) in zip(limits[1:end-1], limits[2:end]))
+
+    for (l, r) in keys(d)
+        for x in xs
+            if l < x <= r
+                d[(l, r)] += 1
+            end
+        end
+    end
+
+    output = zeros(length(keys(d)), 2)
+    for (i, (l, r)) in sort(collect(keys(d)), by=first) |> enumerate
+        output[i, 1] = (l + r) / 2
+        output[i, 2] = d[(l, r)]
+    end
+    output[:, 2] /= sum(output[:, 2])
+    bins = output[:, 1]
+    rel_counts = output[:, 2]
+    if autoscale
+        ax.limits[end] = maximum(rel_counts) * 1.1
+    end
+    for el in ax.elements
+        if typeof(el) == Tick{Val{:y}}
+            #TODO: factor out autoscaling function
+            max = ax.limits[end]
+            f = 10^(floor(log10(max)) - 1)
+            empty!(el.positions)
+            push!(el.positions, collect(0:f*5:max)...)
+        end
+    end
+    BarPlot(bins, rel_counts, ax; width=w, kw...)
 end
 
 struct ScatterPlot <: Plot
     xs::Vector{Float64}
     ys::Vector{Float64}
     axis::Axis
-    properties::Dict{Symbol, Any}
+    properties::Dict{Symbol,Any}
     function ScatterPlot(xs, ys, ax; kw...)
         new(xs, ys, ax, kw)
     end
 end
 
-function axis!(fig::Figure{Axis}, uvwh::Tuple{Number, Number, Number, Number}, lims::Tuple{Number, Number, Number, Number}; kw...)::Axis
+function axis!(fig::Figure{Axis}, uvwh::Tuple{Number,Number,Number,Number}, lims::Tuple{Number,Number,Number,Number}; kw...)::Axis
     u, v, w, h = uvwh
-    ax = Axis(fig, UVCoords(u, v), w, h, lims, []; kw...)
+    ax = Axis(fig, UVCoords(u, v), w, h, [lims...], []; kw...)
     push!(fig.axes, ax)
     ax
 end
@@ -163,7 +203,7 @@ function line_tag(x1, x2, y1, y2, color::String, linewidth::Float64)::Tag{Val{:l
     Tag{Val{:line}}(pars, children, false)
 end
 
-function polyline(xs, ys, color::String, linewidth::Float64)::Tag{Val{:polyline}}
+function polyline_tag(xs, ys; kw...)::Tag{Val{:polyline}}
     points = let
         buf = IOBuffer()
         for (x, y) in zip(xs, ys)
@@ -173,15 +213,8 @@ function polyline(xs, ys, color::String, linewidth::Float64)::Tag{Val{:polyline}
     end
     pars = Dict(
         "points" => "$(points)",
-        "stroke" => color,
-        "width" => "$(linewidth)",
         "fill" => "none",
-    )
-    pars = Dict(
-        "points" => "$(points)",
-        "stroke" => color,
-        "width" => "$(linewidth)",
-        "fill" => "none",
+        Dict(replace(String(k), "_" => "-") => "$v" for (k, v) in kw)...
     )
     children = TagChild[]
     Tag{Val{:polyline}}(pars, children, false)
@@ -221,9 +254,9 @@ end
 
 render!(buf, String) = write(buf, String)
 
-function ticks!(ax::Axis, xticks::Vector{Float64}, yticks::Vector{Float64})
-    push!(ax.elements, Tick{Val{:x}}(xticks, "black", 1.0, ax))
-    push!(ax.elements, Tick{Val{:y}}(yticks, "black", 1.0, ax))
+function ticks!(ax::Axis, xticks, yticks)
+    push!(ax.elements, Tick{Val{:x}}(collect(xticks), "black", 1.0, ax))
+    push!(ax.elements, Tick{Val{:y}}(collect(yticks), "black", 1.0, ax))
 end
 
 function render(fig::Figure)::String
@@ -273,12 +306,12 @@ function to_tags(line::LinePlot)
     x(u) = fw * (au + u * aw)
     y(v) = fh * (av + v * ah)
     u(x) = (x - xmin) / (xmax - xmin)
-    v(y) = (y - ymin) / (ymax - ymin)
+    v(y) = 1 - (y - ymin) / (ymax - ymin)
 
     xs = [x(u(xi)) for xi in line.xs]
-    ys = [y(1 - v(yi)) for yi in line.ys]
+    ys = [y(v(yi)) for yi in line.ys]
 
-    polyline(xs, ys, "red", 1.0)
+    polyline_tag(xs, ys; line.properties...)
 end
 
 function to_tags(sctr::ScatterPlot)
@@ -289,10 +322,10 @@ function to_tags(sctr::ScatterPlot)
     x(u) = fw * (au + u * aw)
     y(v) = fh * (av + v * ah)
     u(x) = (x - xmin) / (xmax - xmin)
-    v(y) = (y - ymin) / (ymax - ymin)
+    v(y) = 1 - (y - ymin) / (ymax - ymin)
 
     xs = [x(u(xi)) for xi in sctr.xs]
-    ys = [y(1 - v(yi)) for yi in sctr.ys]
+    ys = [y(v(yi)) for yi in sctr.ys]
 
     [circle_tag(xi, yi, 1; sctr.properties...) for (xi, yi) in zip(xs, ys)]
 end
@@ -310,7 +343,7 @@ function to_tags(bplt::BarPlot)
     xs = [x(u(xi)) for xi in bplt.xs]
     ys = [y(v(yi)) for yi in bplt.ys]
 
-    [rect_tag(xi - bplt.width/2, yi, bplt.width, abs(yi - y(v(0))); bplt.properties...) for (xi, yi) in zip(xs, ys)]
+    [rect_tag(xi - bplt.width / 2, yi, bplt.width, abs(yi - y(v(0))); bplt.properties...) for (xi, yi) in zip(xs, ys)]
 end
 
 function to_tags(tk::Tick{Val{:x}})
@@ -339,32 +372,36 @@ function to_tags(tk::Tick{Val{:y}})
 
     vcat(
         [line_tag(x(-0.005), x(0.005), y(1 - v(yi)), y(1 - v(yi)), "black", 1.0) for yi in tk.positions],
-        [text_tag(x(-0.03), y(1 - v(yi) + 0.02), "$yi"; text_anchor="end") for yi in tk.positions]
+        [text_tag(x(-0.03), y(1 - v(yi) + 0.02), "$(round(yi; digits=4))"; text_anchor="end") for yi in tk.positions]
     )
 end
 
 function test()
     fig = Figure(640, 480, Axis[])
 
-    # first axis
-    ax = axis!(fig, (0.2, 0.1, 0.75, 0.35),(-10, 110, -10, 220); fill="#dedede")
-    # title
-    push!(ax.elements, Text("A somewhat hacky title", 0.5, 1.1, ax; text_anchor="middle", font_size="20pt"))
+    # data
+    n = 10000
+    xs = collect(0:n)
+    ys = randn(length(xs)) .* 30 .+ 100
 
-    ticks!(ax, [0, 25, 50, 75, 100.0], [0, 50, 100, 150, 200.0])
-    push!(ax.elements, Text("x-label / unit", 0.5, -0.2, ax; text_anchor="middle"))
-    push!(ax.elements, Text("y-label / unit", -0.15, 0.5, ax; angle=270.0, text_anchor="middle"))
-    xs = collect(0:100)
-    ys = rand(101) * 200
-    push!(ax.elements, LinePlot(xs, ys, ax))
-    push!(ax.elements, ScatterPlot(xs, ys, ax; r="4px", fill="blue"))
-    
+    # first axis
+    ax = axis!(fig, (0.2, 0.1, 0.75, 0.35), (-n*0.01, n*1.01, -10, 220); fill="#dedede")
+    # title
+    push!(ax.elements, Text("Data sampled from a normal distribution", 0.5, 1.1, ax; text_anchor="middle", font_size="20pt"))
+
+    ticks!(ax, [0, floor(n/2), n], [0, 50, 100, 150, 200.0])
+    push!(ax.elements, Text("sample", 0.5, -0.2, ax; text_anchor="middle"))
+    push!(ax.elements, Text("value", -0.15, 0.5, ax; angle=270.0, text_anchor="middle"))
+    push!(ax.elements, LinePlot(xs, ys, ax; stroke="blue"))
+    # push!(ax.elements, ScatterPlot(xs, ys, ax; r="4px", fill="red"))
+
     # second axis
-    ax = axis!(fig, (0.2, 0.55, 0.75, 0.35),(-10, 110, -10, 220); fill="#decebe")
-    ticks!(ax, [25, 50, 75, 100.0], [0, 50, 100, 150, 200.0])
-    push!(ax.elements, Text("x-label / unit", 0.5, -0.2, ax; text_anchor="middle"))
-    push!(ax.elements, Text("y-label / unit", -0.15, 0.5, ax; angle=270.0, text_anchor="middle"))
-    push!(ax.elements, BarPlot(xs, ys, ax, 5; fill="blue"))
+    ax = axis!(fig, (0.2, 0.55, 0.75, 0.35), (20, 180, 0, 0.1); fill="#dedede")
+    ticks!(ax, 25:25:200, 0:50:200)
+    push!(ax.elements, Text("value", 0.5, -0.2, ax; text_anchor="middle"))
+    push!(ax.elements, Text("frequency", -0.15, 0.5, ax; angle=270.0, text_anchor="middle"))
+    # push!(ax.elements, BarPlot(xs, ys, ax, 5; fill="blue"))
+    push!(ax.elements, histogram(ys, 20, 180, 1, ax; fill="magenta", width=2))
     render(fig)
 end
 
