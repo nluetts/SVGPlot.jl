@@ -141,6 +141,26 @@ function transformations(ax)
     x, y, u, v
 end
 
+function crop_to_axis(sctr::LinePlot)
+    xs, ys = sctr.xs, sctr.ys
+    return xs, ys
+    #TODO
+    xmin, xmax, ymin, ymax = sctr.axis.limits
+
+    xy_cropped = [(x, y) for (x, y) in zip(xs, ys) if xmin <= x <= xmax && ymin <= y <= ymax]
+
+    map(first, xy_cropped), map(last, xy_cropped)
+end
+
+function crop_to_axis(sctr::ScatterPlot)
+    xs, ys = sctr.xs, sctr.ys
+    xmin, xmax, ymin, ymax = sctr.axis.limits
+
+    xy_cropped = [(x, y) for (x, y) in zip(xs, ys) if xmin <= x <= xmax && ymin <= y <= ymax]
+
+    map(first, xy_cropped), map(last, xy_cropped)
+end
+
 function to_tags(txt::Text)::Tag{Val{:text}}
     x, y, _, _ = transformations(txt.axis)
 
@@ -158,8 +178,9 @@ end
 function to_tags(line::LinePlot)
     x, y, u, v = transformations(line.axis)
 
-    xs = [x(u(xi)) for xi in line.xs]
-    ys = [y(v(yi)) for yi in line.ys]
+    xs, ys = crop_to_axis(line)
+    xs = [x(u(xi)) for xi in xs]
+    ys = [y(v(yi)) for yi in ys]
 
     polyline_tag(xs, ys; line.properties...)
 end
@@ -167,37 +188,67 @@ end
 function to_tags(sctr::ScatterPlot)
     x, y, u, v = transformations(sctr.axis)
 
-    xs = [x(u(xi)) for xi in sctr.xs]
-    ys = [y(v(yi)) for yi in sctr.ys]
+    xs, ys = crop_to_axis(sctr)
+    xs = [x(u(xi)) for xi in xs]
+    ys = [y(v(yi)) for yi in ys]
 
     [circle_tag(xi, yi, 1; sctr.properties...) for (xi, yi) in zip(xs, ys)]
 end
 
 function to_tags(bplt::BarPlot)
     x, y, u, v = transformations(bplt.axis)
+    yv(yi) = y(v(yi))
 
-    xs = [x(u(xi)) for xi in bplt.xs]
-    ys = [y(v(yi)) for yi in bplt.ys]
+    xmin, xmax, ymin, ymax = bplt.axis.limits
 
-    [rect_tag(xi - bplt.width / 2, yi, bplt.width, abs(yi - y(v(0))); bplt.properties...)
-     for (xi, yi) in zip(xs, ys)]
+    tags = []
+    for (xi, yi) in zip(bplt.xs, bplt.ys)
+        # if bar falls outside drawing range, we do nothing
+        if xi < xmin || xi > xmax || yi > 0 > ymax || yi < 0 < ymin
+            continue
+        end
+
+        # if we end up here, at least a part of the bar has to be drawn
+        x_screen = x(u(xi)) - bplt.width / 2
+
+        height_screen =
+            if yi < 0
+                # keep in mind that the direction is swapped
+                # in figure space
+                yv(max(yi, ymin)) - yv(min( 0, ymax))
+            else
+                yv(max(0, ymin)) - yv(min(yi, ymax))
+            end
+        y_screen =
+            if yi < 0 
+                yv(max(ymin, yi)) - height_screen
+            else 
+                yv(min(ymax, yi))
+            end
+
+        push!(tags, rect_tag(x_screen, y_screen, bplt.width, height_screen; bplt.properties... ))
+    end
+
+    tags
 end
 
 function to_tags(tk::Tick{Val{:x}})
     x, y, u, _ = transformations(tk.axis)
+    xmin, xmax, _, _ = tk.axis.limits
 
     vcat(
-        [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01), "black", 1.0) for xi in tk.positions],
-        [text_tag(x(u(xi)), y(1.1), "$xi"; text_anchor="middle") for xi in tk.positions]
+        [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01), "black", 1.0) for xi in tk.positions if xmin <= xi <= xmax],
+        [text_tag(x(u(xi)), y(1.1), "$xi"; text_anchor="middle") for xi in tk.positions if xmin <= xi <= xmax]
     )
 end
 
 function to_tags(tk::Tick{Val{:y}})
     x, y, _, v = transformations(tk.axis)
+    _, _, ymin, ymax = tk.axis.limits
 
     vcat(
-        [line_tag(x(-0.005), x(0.005), y(1 - v(yi)), y(1 - v(yi)), "black", 1.0) for yi in tk.positions],
-        [text_tag(x(-0.03), y(1 - v(yi) + 0.02), "$(round(yi; digits=4))"; text_anchor="end") for yi in tk.positions]
+        [line_tag(x(-0.005), x(0.005), y(v(yi)), y(v(yi)), "black", 1.0) for yi in tk.positions if ymin <= yi <= ymax],
+        [text_tag(x(-0.03), y(v(yi) + 0.02), "$(round(yi; digits=4))"; text_anchor="end") for yi in tk.positions if ymin <= yi <= ymax]
     )
 end
 
@@ -251,8 +302,8 @@ function histogram(xs, start, stop, step, ax; autoscale = true, w=4, kw...)
             #TODO: factor out autoscaling function
             max = ax.limits[end]
             f = 10^(floor(log10(max)) - 1)
-            empty!(el.positions)
-            push!(el.positions, collect(0:f*5:max)...)
+            # empty!(el.positions)
+            # push!(el.positions, collect(0:f*5:max)...)
         end
     end
     BarPlot(bins, rel_counts, ax; width=w, kw...)
