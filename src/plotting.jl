@@ -53,7 +53,7 @@ struct Text <: Element
     end
 end
 
-struct Tick{T<:Val} <: Element
+struct Ticks{T<:Val} <: Element
     positions::Vector{Float64}
     color::String
     linewidth::Float64
@@ -66,7 +66,7 @@ struct LinePlot <: Plot
     xs::Vector{Float64}
     ys::Vector{Float64}
     axis::Axis
-    properties::Dict{Symbol, Any}
+    properties::Dict{Symbol,Any}
     function LinePlot(xs, ys, ax; kw...)
         new(xs, ys, ax, kw)
     end
@@ -164,7 +164,7 @@ end
 function to_tags(txt::Text)::Tag{Val{:text}}
     x, y, _, _ = transformations(txt.axis)
 
-    x, y = x(txt.u), y(1 - txt.v) 
+    x, y = x(txt.u), y(1 - txt.v)
     θ = get(txt.properties, :angle, nothing)
 
     if !isnothing(θ)
@@ -215,39 +215,41 @@ function to_tags(bplt::BarPlot)
             if yi < 0
                 # keep in mind that the direction is swapped
                 # in figure space
-                yv(max(yi, ymin)) - yv(min( 0, ymax))
+                yv(max(yi, ymin)) - yv(min(0, ymax))
             else
                 yv(max(0, ymin)) - yv(min(yi, ymax))
             end
         y_screen =
-            if yi < 0 
+            if yi < 0
                 yv(max(ymin, yi)) - height_screen
-            else 
+            else
                 yv(min(ymax, yi))
             end
 
-        push!(tags, rect_tag(x_screen, y_screen, bplt.width, height_screen; bplt.properties... ))
+        push!(tags, rect_tag(x_screen, y_screen, bplt.width, height_screen; bplt.properties...))
     end
 
     tags
 end
 
-function to_tags(tk::Tick{Val{:x}})
+function to_tags(tk::Ticks{Val{:x}})
     x, y, u, _ = transformations(tk.axis)
     xmin, xmax, _, _ = tk.axis.limits
 
     vcat(
-        [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01), "black", 1.0) for xi in tk.positions if xmin <= xi <= xmax],
+        [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01); stroke=tk.color, stroke_width=tk.linewidth)
+         for xi in tk.positions if xmin <= xi <= xmax],
         [text_tag(x(u(xi)), y(1.1), "$xi"; text_anchor="middle") for xi in tk.positions if xmin <= xi <= xmax]
     )
 end
 
-function to_tags(tk::Tick{Val{:y}})
+function to_tags(tk::Ticks{Val{:y}})
     x, y, _, v = transformations(tk.axis)
     _, _, ymin, ymax = tk.axis.limits
 
     vcat(
-        [line_tag(x(-0.005), x(0.005), y(v(yi)), y(v(yi)), "black", 1.0) for yi in tk.positions if ymin <= yi <= ymax],
+        [line_tag(x(-0.005), x(0.005), y(v(yi)), y(v(yi)); stroke=tk.color, stroke_width=1.0)
+         for yi in tk.positions if ymin <= yi <= ymax],
         [text_tag(x(-0.03), y(v(yi) + 0.02), "$(round(yi; digits=4))"; text_anchor="end") for yi in tk.positions if ymin <= yi <= ymax]
     )
 end
@@ -270,11 +272,33 @@ function axis!(fig::Figure{Axis}, uvwh::Tuple{Number,Number,Number,Number}, lims
 end
 
 function ticks!(ax::Axis, xticks, yticks)
-    push!(ax.elements, Tick{Val{:x}}(collect(xticks), "black", 1.0, ax))
-    push!(ax.elements, Tick{Val{:y}}(collect(yticks), "black", 1.0, ax))
+    push!(ax.elements, Ticks{Val{:x}}(collect(xticks), "black", 1.0, ax))
+    push!(ax.elements, Ticks{Val{:y}}(collect(yticks), "black", 1.0, ax))
 end
 
-function histogram(xs, start, stop, step, ax; autoscale = true, w=4, kw...)
+function autoticks!(ax::Axis)
+    mx, my = ax.width < ax.height ? (5, 2.5) : (2.5, 5)
+    function set_ticks(idx, tmin, tmax, mult)
+        span_mag = floor(log10(abs(tmax - tmin)))
+        f = 10^(span_mag - 1)
+        pos = (ceil(tmin / f)*f):(f*mult):(floor(tmax / f)*f) |> collect
+        empty!(ax.elements[idx].positions)
+        push!(ax.elements[idx].positions, pos...)
+    end
+
+    i = findfirst(el -> typeof(el) == Ticks{Val{:x}}, ax.elements)
+    if !(isnothing(i))
+        xmin, xmax = ax.limits[1:2]
+        set_ticks(i, xmin, xmax, mx)
+    end
+    i = findfirst(el -> typeof(el) == Ticks{Val{:y}}, ax.elements)
+    if !(isnothing(i))
+        ymin, ymax = ax.limits[3:4]
+        set_ticks(i, ymin, ymax, my)
+    end
+end
+
+function histogram(xs, start, stop, step, ax; autoscale=true, w=4, kw...)
     limits = start:step:stop
     d = Dict((l, r) => 0 for (l, r) in zip(limits[1:end-1], limits[2:end]))
 
@@ -295,16 +319,8 @@ function histogram(xs, start, stop, step, ax; autoscale = true, w=4, kw...)
     bins = output[:, 1]
     rel_counts = output[:, 2]
     if autoscale
-        ax.limits[end] = maximum(rel_counts) * 1.1
-    end
-    for el in ax.elements
-        if typeof(el) == Tick{Val{:y}}
-            #TODO: factor out autoscaling function
-            max = ax.limits[end]
-            f = 10^(floor(log10(max)) - 1)
-            # empty!(el.positions)
-            # push!(el.positions, collect(0:f*5:max)...)
-        end
+        ax.limits[3:4] = [0.0, maximum(rel_counts) * 1.1]
+        autoticks!(ax)
     end
     BarPlot(bins, rel_counts, ax; width=w, kw...)
 end
@@ -325,5 +341,5 @@ function render(fig::Figure)::String
         ax_tags = to_tags(ax)
         add_child!.(Ref(root), ax_tags)
     end
-    render(root) |> take! |> String
+    render(root)
 end

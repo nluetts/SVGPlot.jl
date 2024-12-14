@@ -28,8 +28,8 @@ end
 
 function svg_tag(width, height, kw...)::Tag{Val{:svg}}
     pars = Dict(
-        "width" => "$(width)px",
-        "height" => "$(height)px",
+        "width" => "$(width)",
+        "height" => "$(height)",
         "viewBox" => "0 0 $(width) $(height)",
         to_svg_properties(kw)...
     )
@@ -41,7 +41,7 @@ function circle_tag(cx, cy, r; kw...)::Tag{Val{:circle}}
     pars = Dict(
         "cx" => "$cx",
         "cy" => "$cy",
-        "r" => "$(r)mm",
+        "r" => "$r",
         to_svg_properties(kw)...
     )
     children = TagChild[]
@@ -71,14 +71,13 @@ function text_tag(x, y, text_tag::String; kw...)::Tag{Val{:text}}
     Tag{Val{:text}}(pars, children, true)
 end
 
-function line_tag(x1, x2, y1, y2, color::String, linewidth::Float64; kw...)::Tag{Val{:line}}
+function line_tag(x1, x2, y1, y2; kw...)::Tag{Val{:line}}
     pars = Dict(
         "x1" => "$x1",
         "x2" => "$x2",
         "y1" => "$y1",
         "y2" => "$y2",
-        "stroke" => color,
-        "width" => "$(linewidth)",
+        "stroke" => "black",
         to_svg_properties(kw)...
     )
     children = TagChild[]
@@ -94,7 +93,7 @@ function polyline_tag(xs, ys; kw...)::Tag{Val{:polyline}}
         String(take!(buf))
     end
     pars = Dict(
-        "points" => "$(points)",
+        "points" => points,
         "fill" => "none",
         to_svg_properties(kw)...
     )
@@ -114,7 +113,7 @@ end
 function render(tag::Tag{Val{:svg}})
     buf = IOBuffer()
     render!(buf, tag)
-    buf
+    buf |> take! |> String
 end
 
 function render!(buf::IOBuffer, tag::Tag{Val{T}}) where {T}
