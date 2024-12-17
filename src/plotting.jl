@@ -154,7 +154,7 @@ function crop_to_axis(line::LinePlot)
     xs, ys = line.xs, line.ys
     nx, ny = length(xs), length(ys)
     n = min(nx, ny)
-    if nx < 2 || ny < 2
+    if n < 2
         nx < 2 && @warn "need more than two points to draw line (length x < 2)"
         ny < 2 && @warn "need more than two points to draw line (length y < 2)"
         return xs, ys
@@ -253,7 +253,7 @@ function crop_to_axis(line::LinePlot)
         if 0 < b <= 1 && xm < 0
             num_crossings += 1
             push!(xp_cur, xmin)
-            push!(yp_cur, b * yspan - ymin)
+            push!(yp_cur, b * yspan + ymin)
         end
 
         # This tests whether the line defined by data points crosses top boundary:
@@ -270,7 +270,7 @@ function crop_to_axis(line::LinePlot)
         if 0 < m + b <= 1 && xn > 1
             num_crossings += 1
             push!(xp_cur, xmax)
-            push!(yp_cur, (m + b) * yspan - ymin)
+            push!(yp_cur, (m + b) * yspan + ymin)
         end
 
         # If we cross two times, we can skip checking for more crossings.
@@ -297,12 +297,19 @@ function crop_to_axis(line::LinePlot)
 end
 
 function crop_to_axis(sctr::ScatterPlot)
-    xs, ys = sctr.xs, sctr.ys
-    xmin, xmax, ymin, ymax = sctr.axis.limits
+    # The axis limits, but correctly ordered, no matter if axis directions are
+    # reversed:
+    xmin, xmax, ymin, ymax = let
+        l, r, b, t = sctr.axis.limits
+        min(l, r), max(l, r), min(b, t), max(b, t)
+    end
 
-    xy_cropped = [(x, y) for (x, y) in zip(xs, ys) if xmin <= x <= xmax && ymin <= y <= ymax]
+    filt_idx = [
+        i for (i ,(x, y)) in enumerate(zip(sctr.xs, sctr.ys))
+        if xmin <= x <= xmax && ymin <= y <= ymax
+    ]
 
-    map(first, xy_cropped), map(last, xy_cropped)
+    sctr.xs[filt_idx], sctr.ys[filt_idx]
 end
 
 function to_tags(txt::Text)::Tag{Val{:text}}
