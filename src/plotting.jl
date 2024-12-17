@@ -384,6 +384,7 @@ end
 function to_tags(tk::Ticks{Val{:x}})
     x, y, u, _ = transformations(tk.axis)
     xmin, xmax, _, _ = tk.axis.limits
+    xmin, xmax = min(xmin, xmax), max(xmin, xmax)
 
     vcat(
         [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01); stroke=tk.color, stroke_width=tk.linewidth)
@@ -395,6 +396,7 @@ end
 function to_tags(tk::Ticks{Val{:y}})
     x, y, _, v = transformations(tk.axis)
     _, _, ymin, ymax = tk.axis.limits
+    ymin, ymax = min(ymin, ymax), max(ymin, ymax)
 
     vcat(
         [line_tag(x(-0.005), x(0.005), y(v(yi)), y(v(yi)); stroke=tk.color, stroke_width=1.0)
@@ -430,6 +432,7 @@ function autoticks!(ax::Axis)
     function set_ticks(idx, tmin, tmax, mult)
         span_mag = floor(log10(abs(tmax - tmin)))
         f = 10^(span_mag - 1)
+        # @show ceil(tmin / f)*f, f*mult, floor(tmax / f)*f
         pos = (ceil(tmin / f)*f):(f*mult):(floor(tmax / f)*f) |> collect
         empty!(ax.elements[idx].positions)
         push!(ax.elements[idx].positions, pos...)
@@ -438,11 +441,13 @@ function autoticks!(ax::Axis)
     i = findfirst(el -> typeof(el) == Ticks{Val{:x}}, ax.elements)
     if !(isnothing(i))
         xmin, xmax = ax.limits[1:2]
+        xmin, xmax = min(xmin, xmax), max(xmin, xmax)
         set_ticks(i, xmin, xmax, mx)
     end
     i = findfirst(el -> typeof(el) == Ticks{Val{:y}}, ax.elements)
     if !(isnothing(i))
         ymin, ymax = ax.limits[3:4]
+        ymin, ymax = min(ymin, ymax), max(ymin, ymax)
         set_ticks(i, ymin, ymax, my)
     end
 end
