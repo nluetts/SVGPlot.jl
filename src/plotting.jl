@@ -141,15 +141,159 @@ function transformations(ax)
     x, y, u, v
 end
 
-function crop_to_axis(sctr::LinePlot)
-    xs, ys = sctr.xs, sctr.ys
-    return xs, ys
-    #TODO
-    xmin, xmax, ymin, ymax = sctr.axis.limits
+function crop_to_axis(line::LinePlot)
+    # This function checks the xy-data in LinePlot for going out of the axis
+    # boundaries. If the data goes out of the axis, a new datapoint is added
+    # (at the crossing of the axis). Furthermore, the data is subdivided into
+    # segments at each axis crossing, so it can be rendered with several svg
+    # polyline elements.
+    # This function is the definition of spaghetti code ... but I am currently
+    # unable to find a better solution, and there seem to be just many cases
+    # to consider.
 
-    xy_cropped = [(x, y) for (x, y) in zip(xs, ys) if xmin <= x <= xmax && ymin <= y <= ymax]
+    xs, ys = line.xs, line.ys
+    nx, ny = length(xs), length(ys)
+    n = min(nx, ny)
+    if nx < 2 || ny < 2
+        nx < 2 && @warn "need more than two points to draw line (length x < 2)"
+        ny < 2 && @warn "need more than two points to draw line (length y < 2)"
+        return xs, ys
+    end
 
-    map(first, xy_cropped), map(last, xy_cropped)
+    # The axis limits, but correctly ordered, no matter if axis directions are
+    # reversed:
+    xmin, xmax, ymin, ymax = let
+        l, r, b, t = line.axis.limits
+        min(l, r), max(l, r), min(b, t), max(b, t)
+    end
+
+    # Short circuit if everything fits into axis.
+    if all(xmin < x < xmax && ymin < y < ymax for (x, y) in zip(xs, ys))
+        return [(xs, ys)]
+    end
+
+    xspan = xmax - xmin
+    yspan = ymax - ymin
+
+    # Helper function to find point outside of axis, refering to point by index:
+    outside(i) = xs[i] < xmin || xs[i] > xmax || ys[i] < ymin || ys[i] > ymax
+
+    # Containers to hold data segments:
+    T = typeof(first(xs))
+    xp_cur = T[]
+    yp_cur = T[]
+    segments = [(xp_cur, yp_cur)]
+
+    for i in 1:(n - 1) # iterate datapoints
+        # Current datapoints normalized to axis from 0 to 1 in both x and y
+        # directions. This normalization makes later checks and calculations
+        # of crossings easier.
+        xm, xn, ym, yn = let
+            k, l = xs[i] < xs[i + 1] ? (i, i + 1) : (i + 1, i) # to make sure that xm < xn
+            (xs[k] - xmin)/xspan, (xs[l] - xmin)/xspan,  (ys[k] - ymin)/yspan,  (ys[l] - ymin)/yspan
+        end
+
+        # If the datapoints are _both_ to the left, above, right, or under the
+        # axis, respectively, there cannot be any crossings and we can continue.
+        if (xm < 0 && xn < 0) || (xm > 1 && xn > 1) || (ym < 0 && yn < 0) || (ym > 1 && yn > 1)
+            continue
+        end
+
+        # If the ith point is outside axis and the current segment is not empty,
+        # we have to start a new segment of datapoints.
+        if outside(i)
+            if !isempty(xp_cur)
+                xp_cur = T[]
+                yp_cur = T[]
+                push!(segments, (xp_cur, yp_cur))
+            end
+        else
+            # If ith point lies within axis, we add it to the current segment.
+            push!(xp_cur, xs[i])
+            push!(yp_cur, ys[i])
+            # If (i + 1)th datapoint is also within axis, we do not need to check
+            # for crossings ...
+            if !outside(i + 1)
+                # ... but we have to check if it is the last point, because then
+                # we have to add it to the current (and last) segment.
+                if i + 1 == n
+                    push!(xp_cur, xs[i + 1])
+                    push!(yp_cur, ys[i + 1])
+                    break
+                end
+                continue
+            end
+        end
+
+        # This is an edge case where we cannot use a line function to interpolate
+        # positions of crossings.
+        if xm == xn
+            # Because of the earlier check, we know that 0 < x < 1.
+            if (ym > 1 || yn > 1)
+                push!(xp_cur, xs[i])
+                push!(yp_cur, ymax)
+            end
+            if (ym < 0 || yn < 0)
+                push!(xp_cur, xs[i])
+                push!(yp_cur, ymin)
+            end
+            # There cannot be any other crossings, so we continue.
+            continue
+        end
+
+        # The line function defined by current data points:
+        m = (yn - ym) / (xn - xm) # slope
+        b = ym - xm * m           # offset
+
+        # We keep track of the number of crossings: because there can only be two
+        # we can skip further checks if we reach that number.
+        num_crossings = 0
+
+        # This tests whether the line defined by data points crosses left boundary:
+        if 0 < b <= 1 && xm < 0
+            num_crossings += 1
+            push!(xp_cur, xmin)
+            push!(yp_cur, b * yspan - ymin)
+        end
+
+        # This tests whether the line defined by data points crosses top boundary:
+        if 0 <= (1 - b)/m < 1 && (yn > 1 || ym > 1)
+            num_crossings += 1
+            push!(xp_cur, xspan*(1 - b)/m + xmin)
+            push!(yp_cur, ymax)
+        end
+
+        # If we cross two times, we can skip checking for more crossings.
+        num_crossings == 2 && @goto check_last
+
+        # This tests whether the line defined by data points crosses right boundary:
+        if 0 < m + b <= 1 && xn > 1
+            num_crossings += 1
+            push!(xp_cur, xmax)
+            push!(yp_cur, (m + b) * yspan - ymin)
+        end
+
+        # If we cross two times, we can skip checking for more crossings.
+        num_crossings == 2 && @goto check_last
+
+        # This tests whether the line defined by data points crosses bottom boundary:
+        if 0 <= -b/m < 1 && (yn < 0 || ym < 0)
+            num_crossings += 1
+            push!(xp_cur, -b*xspan/m + xmin)
+            push!(yp_cur, ymin)
+        end
+
+        @label check_last
+        if i == n - 1 && !outside(i + 1)
+            # If the last datapoint falls within the axis, we add it to the current (and last)
+            # datapoint segment.
+            push!(xp_cur, xs[i + 1])
+            push!(yp_cur, ys[i + 1])
+        end
+                
+    end # iterate datapoints
+
+    segments
 end
 
 function crop_to_axis(sctr::ScatterPlot)
@@ -178,11 +322,9 @@ end
 function to_tags(line::LinePlot)
     x, y, u, v = transformations(line.axis)
 
-    xs, ys = crop_to_axis(line)
-    xs = [x(u(xi)) for xi in xs]
-    ys = [y(v(yi)) for yi in ys]
+    segments = crop_to_axis(line)
 
-    polyline_tag(xs, ys; line.properties...)
+    [polyline_tag(x.(u.(xs)), y.(v.(ys)); line.properties...) for (xs, ys) in segments]
 end
 
 function to_tags(sctr::ScatterPlot)
