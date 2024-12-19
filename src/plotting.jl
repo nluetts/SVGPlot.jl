@@ -1,6 +1,6 @@
 # This code defines the `Element` type, as one layer of abstraction above SVG
 # tags. Elements are build from SVG tags under some restrictions to produce
-# meaningful plots.
+# meaningful plots. The functions to turn Elements to svg code is `to_tags()`.
 
 
 # ----------------------------------------------------------------------------
@@ -28,7 +28,7 @@ struct Figure{T<:AbstractAxis} <: Element
     annotations::Vector{Element}
 end
 
-struct Axis <: AbstractAxis
+mutable struct Axis <: AbstractAxis
     fig::Figure{Axis}
     u::Float64
     v::Float64
@@ -41,6 +41,9 @@ struct Axis <: AbstractAxis
         new(fig, u, v, w, h, lims, els, kw)
     end
 end
+
+const CURRENT_AXIS::Union{Ref{Axis}, Nothing} = nothing
+const CURRENT_FIGURE::Union{Ref{Figure}, Nothing} = nothing
 
 struct Text <: Element
     text::String
@@ -389,7 +392,7 @@ function to_tags(tk::Ticks{Val{:x}})
     vcat(
         [line_tag(x(u(xi)), x(u(xi)), y(0.99), y(1.01); stroke=tk.color, stroke_width=tk.linewidth)
          for xi in tk.positions if xmin <= xi <= xmax],
-        [text_tag(x(u(xi)), y(1.1), "$xi"; text_anchor="middle") for xi in tk.positions if xmin <= xi <= xmax]
+        [text_tag(x(u(xi)), y(1.05), "$xi"; text_anchor="middle") for xi in tk.positions if xmin <= xi <= xmax]
     )
 end
 
@@ -428,28 +431,109 @@ function ticks!(ax::Axis, xticks, yticks)
 end
 
 function autoticks!(ax::Axis)
+    # Choosing a multiplicator for the stepsize is done depending
+    # on whether the figure is in portrait or landscape format.
     mx, my = ax.width < ax.height ? (5, 2.5) : (2.5, 5)
     function set_ticks(idx, tmin, tmax, mult)
+        # This code finds a usable initial stepsize, based on the order
+        # of magnitude of the span.
         span_mag = floor(log10(abs(tmax - tmin)))
         f = 10^(span_mag - 1)
-        # @show ceil(tmin / f)*f, f*mult, floor(tmax / f)*f
-        pos = (ceil(tmin / f)*f):(f*mult):(floor(tmax / f)*f) |> collect
+        step = f*mult
+        pos = (ceil(tmin / f)*f):step:(floor(tmax / f)*f) |> collect
+        # Now we post-process based on how may positions we have:
+        # avoid too few ticks by halfing the stepsize ...
+        while length(pos) <= 3
+            step /= 2
+            pos = (ceil(tmin / f)*f):step:(floor(tmax / f)*f) |> collect
+        end
+        # ... avoid to many ticks by neglecting every other tick.
+        while length(pos) > 10
+            pos = pos[1:2:end]
+        end            
+        # Write the positions to the axis' tick element.
         empty!(ax.elements[idx].positions)
         push!(ax.elements[idx].positions, pos...)
     end
 
+    # handle x-axis
     i = findfirst(el -> typeof(el) == Ticks{Val{:x}}, ax.elements)
-    if !(isnothing(i))
-        xmin, xmax = ax.limits[1:2]
-        xmin, xmax = min(xmin, xmax), max(xmin, xmax)
-        set_ticks(i, xmin, xmax, mx)
+    if isnothing(i)
+        # Create an y-ticks element, if it does not exist.
+        push!(ax.elements, Ticks{Val{:x}}([], "black", 1, ax))
+        i = length(ax.elements)
     end
+    xmin, xmax = ax.limits[1:2]
+    xmin, xmax = min(xmin, xmax), max(xmin, xmax)
+    set_ticks(i, xmin, xmax, mx)
+
+    # handle y-axis
     i = findfirst(el -> typeof(el) == Ticks{Val{:y}}, ax.elements)
-    if !(isnothing(i))
-        ymin, ymax = ax.limits[3:4]
-        ymin, ymax = min(ymin, ymax), max(ymin, ymax)
-        set_ticks(i, ymin, ymax, my)
+    if isnothing(i)
+        # Create an y-ticks element, if it does not exist.
+        push!(ax.elements, Ticks{Val{:y}}([], "black", 1, ax))
+        i = length(ax.elements)
     end
+    ymin, ymax = ax.limits[3:4]
+    ymin, ymax = min(ymin, ymax), max(ymin, ymax)
+    set_ticks(i, ymin, ymax, my)
+end
+
+function autoscale!(ax::Axis)
+    xmin = Inf
+    ymin = Inf
+    xmax = -Inf
+    ymax = -Inf
+    plot_element_present = false
+    for el in ax.elements
+        if typeof(el) <: Plot
+            plot_element_present = true
+            xmin = min(minimum(el.xs), xmin)
+            ymin = min(minimum(el.ys), ymin)
+            xmax = max(maximum(el.xs), xmax)
+            ymax = max(maximum(el.ys), ymax)
+            xspan = abs(xmin - xmax)
+            yspan = abs(ymin - ymax)
+            xmin = xmin - xspan * 0.05
+            ymin = ymin - yspan * 0.05
+            xmax = xmax + xspan * 0.05
+            ymax = ymax + yspan * 0.05
+        end
+    end
+    if plot_element_present
+        ax.limits = [xmin, xmax, ymin, ymax]
+        autoticks!(ax)
+    else
+        @warn "cannot autoscale axis with no data to plot"
+    end
+end
+
+"""
+Create a blank figure with one axis. 
+"""
+function plot()
+    fig = Figure(640, 480, Axis[], Element[])
+    ax = axis!(fig, (0.1, 0.05, 0.85, 0.85), (0.0, 1.0, 0.0, 1.0); fill="#f1f1fe")
+    fig, ax
+end
+
+"""Get the current axis."""
+function gca()
+    return isnothing(CURRENT_AXIS) ? nothing : CURRENT_AXIS[]
+end
+
+"""Get the current figure."""
+function gcf()
+    return isnothing(CURRENT_FIGURE) ? nothing : CURRENT_FIGURE[]
+end
+
+function lines(xs, ys; ax=gca(), kw...)
+    if isnothing(ax)
+        _, ax = plot()
+    end
+    push!(ax.elements, LinePlot(xs, ys, ax; kw...))
+    autoscale!(ax)
+    ax.fig
 end
 
 function histogram(xs, start, stop, step, ax; autoscale=true, w=4, kw...)
